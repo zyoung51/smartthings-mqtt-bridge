@@ -15,7 +15,8 @@ var winston = require('winston'),
     jsonfile = require('jsonfile'),
     fs = require('fs'),
     semver = require('semver'),
-    request = require('request');
+    request = require('request'),
+    Influx = require('influx');
 
 var CONFIG_DIR = process.env.CONFIG_DIR || process.cwd(),
     CONFIG_FILE = path.join(CONFIG_DIR, 'config.yml'),
@@ -41,7 +42,8 @@ var app = express(),
     subscriptions = [],
     callback = '',
     config = {},
-    history = {};
+    history = {},
+    influx;
 
 // Write all events to disk as well
 winston.add(winston.transports.File, {
@@ -174,9 +176,26 @@ function handlePushEvent (req, res) {
     client.publish(topic, value, {
         retain: config.mqtt[RETAIN]
     }, function () {
-        res.send({
-            status: 'OK'
-        });
+        winston.info('attemtping to send message to influxdb');
+        if( value == "on" )
+            value = "1";
+        if( value == "off" )
+            value = "0";
+        
+        influx.writePoints([
+            {
+              measurement: 'sensor_data',
+              tags: { 
+                  name: req.body.name,
+                  type: req.body.type,
+                  topic: topic
+              },
+              fields: { data: value },
+            }
+          ]).then(function() {
+              winston.info('Sent message to influxdb');
+              res.send({ status: 'OK' });
+          });
     });
 }
 
@@ -338,6 +357,25 @@ async.series([
             // @TODO Not call this twice if we get disconnected
             next = function () {};
         });
+    },
+    function connectToInfluxDB(next) {
+        winston.info('Connecting to influxdb at influxdb');
+        influx = new Influx.InfluxDB({
+            host: 'influxdb',
+            database: 'smartthings_db',
+            username: 'smartthings',
+            password: 'sm4rh1ngs',
+            schema: [
+              {
+                measurement: 'sensor_data',
+                fields: {
+                  data: Influx.FieldType.INTEGER
+                },
+                tags: [ 'name', 'type', 'topic' ]
+              }
+            ]
+           });
+        process.nextTick(next);
     },
     function configureCron (next) {
         winston.info('Configuring autosave');
